@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Face Recognition using face-api.js</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; background: #f9f9f9; }
+    video, canvas { border-radius: 10px; margin-top: 10px; }
+    #overlay { position: absolute; top: 0; left: 0; }
+    .container { position: relative; display: inline-block; }
+    button { padding: 10px 15px; border: none; background: #4CAF50; color: white; border-radius: 8px; cursor: pointer; }
+    button:hover { background: #45a049; }
+  </style>
+</head>
+<body>
+  <h2>🎯 Face Recognition (face-api.js)</h2>
+  <p>Allow camera access when prompted.</p>
+
+  <div>
+    <button id="startBtn">Start Recognition</button>
+  </div>
+
+  <div class="container">
+    <video id="video" width="640" height="480" autoplay muted></video>
+    <canvas id="overlay" width="640" height="480"></canvas>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+
+    async function loadModels() {
+      const MODEL_URL = './models';
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+      console.log("✅ Models Loaded");
+    }
+
+    async function startVideo() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+      video.srcObject = stream;
+    }
+
+    async function loadLabeledImages() {
+      const labels = ['alice', 'bob']; 
+      return Promise.all(
+        labels.map(async label => {
+          const descriptions = [];
+          for (let i = 1; i <= 2; i++) {
+            const img = await faceapi.fetchImage(`./labels/${label}/${i}.jpg`);
+            const detection = await faceapi
+              .detectSingleFace(img)
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+            if (detection) descriptions.push(detection.descriptor);
+          }
+          return new faceapi.LabeledFaceDescriptors(label, descriptions);
+        })
+      );
+    }
+
+    document.getElementById('startBtn').addEventListener('click', async () => {
+      await loadModels();
+      await startVideo();
+      const labeledFaceDescriptors = await loadLabeledImages();
+      const faceMatcher = new faceapi.FaceMatcher(labeledFaceDescriptors, 0.6);
+
+      video.addEventListener('play', () => {
+        const displaySize = { width: video.width, height: video.height };
+        faceapi.matchDimensions(overlay, displaySize);
+
+        setInterval(async () => {
+          const detections = await faceapi.detectAllFaces(
+            video,
+            new faceapi.TinyFaceDetectorOptions()
+          ).withFaceLandmarks().withFaceDescriptors();
+
+          const resizedDetections = faceapi.resizeResults(detections, displaySize);
+          ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+          const results = resizedDetections.map(d => faceMatcher.findBestMatch(d.descriptor));
+
+          results.forEach((result, i) => {
+            const box = resizedDetections[i].detection.box;
+            const text = result.toString();
+            const drawBox = new faceapi.draw.DrawBox(box, { label: text });
+            drawBox.draw(overlay);
+          });
+        }, 200);
+      });
+    });
+  </script>
+</body>
+</html>

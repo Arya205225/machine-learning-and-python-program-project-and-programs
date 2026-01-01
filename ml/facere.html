@@ -1,0 +1,142 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Face Recognition — face-api.js demo</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align:center; }
+    #video { border: 1px solid #ccc; }
+    #canvas { position: absolute; left: 0; top: 0; }
+    .container { position: relative; display:inline-block; }
+  </style>
+</head>
+<body>
+  <h2>Face Recognition </h2>
+ 
+
+  <div>
+    <button id="startWebcam">Start Webcam</button>
+    <input id="labelUpload" type="file" multiple webkitdirectory directory />
+    <button id="loadLabels">Load Labeled Images (labels/ folder)</button>
+  </div>
+
+  <div class="container">
+    <video id="video" width="720" height="560" autoplay muted></video>
+    <canvas id="overlay" width="720" height="560"></canvas>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+  <script>
+    const MODEL_URL = './models';
+    const video = document.getElementById('video');
+    const overlay = document.getElementById('overlay');
+    const ctx = overlay.getContext('2d');
+
+    let labeledFaceDescriptors = null;
+    let faceMatcher = null;
+
+    async function loadModels() {
+      await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL);
+      await faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL);
+      console.log('Models loaded');
+    }
+
+    async function startWebcam() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: {} });
+        video.srcObject = stream;
+      } catch (err) {
+        alert('Could not access webcam: ' + err);
+      }
+    }
+
+    async function loadLabeledImages() {
+      const labels = [];
+      try {
+        const resp = await fetch('./labels/labels.json');
+        if (resp.ok) {
+          const data = await resp.json();
+          labels.push(...data);
+        } else {
+          throw new Error('labels.json missing');
+        }
+      } catch (e) {
+        alert('Please add a labels/labels.json listing person folders, or use "Load Labeled Images (Upload)".\n\nExample labels.json: ["alice","bob"]');
+        return null;
+      }
+
+      const descriptors = [];
+      for (const label of labels) {
+        const imgUrls = await (await fetch(`./labels/${label}/images.json`)).json()
+            .catch(()=>{ alert(`Please provide labels/${label}/images.json listing image file names.`); throw new Error('images.json missing');});
+        const faceDescriptors = [];
+        for (const imgName of imgUrls) {
+          const img = await faceapi.fetchImage(`./labels/${label}/${imgName}`);
+          const detections = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+          if (!detections) {
+            console.warn('No face in', imgName);
+            continue;
+          }
+          faceDescriptors.push(detections.descriptor);
+        }
+        if (faceDescriptors.length > 0) {
+          descriptors.push(new faceapi.LabeledFaceDescriptors(label, faceDescriptors));
+        }
+      }
+      return descriptors;
+    }
+
+    video.addEventListener('playing', () => {
+      overlay.width = video.width;
+      overlay.height = video.height;
+      const displaySize = { width: video.width, height: video.height };
+      faceapi.matchDimensions(overlay, displaySize);
+
+      setInterval(async () => {
+        const detections = await faceapi.detectAllFaces(
+            video,
+            new faceapi.TinyFaceDetectorOptions()
+          ).withFaceLandmarks().withFaceDescriptors();
+
+        const resized = faceapi.resizeResults(detections, displaySize);
+        ctx.clearRect(0,0,overlay.width, overlay.height);
+
+        if (!faceMatcher && labeledFaceDescriptors) {
+          faceMatcher = new faceapi.FaceMatcher(labeledFaceDescriptors, 0.6);
+        }
+
+        resized.forEach(d => {
+          const box = d.detection.box;
+          ctx.strokeStyle = '#00FF00';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(box.x, box.y, box.width, box.height);
+
+          let label = 'Unknown';
+          if (faceMatcher) {
+            const best = faceMatcher.findBestMatch(d.descriptor);
+            label = best.toString();
+          }
+          ctx.fillStyle = '#00FF00';
+          ctx.font = '16px sans-serif';
+          ctx.fillText(label, box.x+2, box.y+box.height-6);
+        });
+      }, 200);
+    });
+
+    document.getElementById('startWebcam').addEventListener('click', async () => {
+      await loadModels();
+      await startWebcam();
+    });
+
+    document.getElementById('loadLabels').addEventListener('click', async () => {
+      if (!faceapi.nets.tinyFaceDetector.params) await loadModels();
+      const descriptors = await loadLabeledImages();
+      if (descriptors && descriptors.length) {
+        labeledFaceDescriptors = descriptors;
+        alert('Loaded labeled descriptors for: ' + descriptors.map(d => d.label).join(', '));
+      }
+    });
+  </script>
+</body>
+</html>
